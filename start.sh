@@ -30,6 +30,7 @@ install() {
     cd "serv00-play"
     git stash
     if git pull origin main; then
+      git fetch --tags
       echo "更新完毕"
       #重新给各个脚本赋权限
       chmod +x ./start.sh
@@ -183,7 +184,7 @@ createConfigFile() {
       item+=("webssh")
       ;;
     88)
-      delCron
+      #delCron
       backupConfig "config.json"
       green "设置完毕!"
       return 0
@@ -730,6 +731,7 @@ configSingBox() {
       if [[ -n "$hy2_ip" ]]; then
         green "选中未封ip为 $hy2_ip"
       else
+        hy2_ip=$(curl -s icanhazip.com)
         red "未能找到未封IP,保持默认值！"
       fi
       ;;
@@ -816,6 +818,7 @@ configSingBox() {
       if [[ -n "$hy2_ip" ]]; then
         green "选中未封ip为 $hy2_ip"
       else
+        hy2_ip=$(curl -s icanhazip.com)
         red "未能找到未封IP,保持默认值！"
       fi
       #配置socks5
@@ -1245,6 +1248,7 @@ installNeZhaAgent() {
   if [ ! -e "${workedir}" ]; then
     mkdir -p "${workedir}"
   fi
+
   cd ${workedir}
   if [[ ! -e nezha-agent ]]; then
     echo "正在下载哪吒探针..."
@@ -1452,7 +1456,7 @@ installMtg() {
   #自动生成密钥
   head=$(hostname | cut -d '.' -f 1)
   no=${head#s}
-  host="panel${no}.serv00.com"
+  host="panel${no}.$(getDoMain)"
   secret=$(./mtg generate-secret --hex $host)
   loadPort
   randomPort tcp mtg
@@ -1507,7 +1511,7 @@ startMtg() {
   eval "$cmd"
   sleep 3
   if checkMtgAlive; then
-    mtproto="https://t.me/proxy?server=${host}.serv00.com&port=${port}&secret=${secret}"
+    mtproto="https://t.me/proxy?server=${host}.$(getDoMain)&port=${port}&secret=${secret}"
     echo "$mtproto"
     green "启动成功"
   else
@@ -1622,8 +1626,7 @@ installAlist() {
   else
     cd "alist" || return 1
     if [ ! -e "alist" ]; then
-      # read -p "请输入使用密码:" password
-      if ! checkDownload "alist"; then
+      if ! download_from_net "alist"; then
         return 1
       fi
     fi
@@ -1734,6 +1737,20 @@ resetAdminPass() {
   extract_user_and_password "$output"
 }
 
+updateAlist() {
+  cd ${installpath}/serv00-play/alist || (echo "未安装alist" && return)
+
+  if ! check_update_from_net "alist"; then
+    return 1
+  fi
+
+  stopAlist
+  download_from_net "alist"
+  chmod +x ./alist
+  startAlist
+  echo "更新完毕!"
+}
+
 alistServ() {
   if ! checkInstalled "serv00-play"; then
     return 1
@@ -1742,11 +1759,12 @@ alistServ() {
     yellow "----------------------"
     echo "alist:"
     echo "服务状态: $(checkProcStatus alist)"
-    echo "1. 安装部署alist "
-    echo "2. 启动alist"
-    echo "3. 停掉alist"
+    echo "1. 安装部署"
+    echo "2. 启动"
+    echo "3. 停掉"
     echo "4. 重置admin密码"
-    echo "8. 卸载alist"
+    echo "5. 更新"
+    echo "8. 卸载"
     echo "9. 返回主菜单"
     echo "0. 退出脚本"
     yellow "----------------------"
@@ -1764,6 +1782,9 @@ alistServ() {
       ;;
     4)
       resetAdminPass
+      ;;
+    5)
+      updateAlist
       ;;
     8)
       uninstallAlist
@@ -1823,15 +1844,15 @@ printIndexPorts() {
 
 delPortMenu() {
   loadIndexPorts
-
-  if [[ ${#indexPorts[@]} -gt 0 ]]; then
+  local portNum=${#indexPorts[@]}
+  if [[ ${portNum} -gt 0 ]]; then
     printIndexPorts
     read -p "请选择要删除的端口记录编号(输入-1删除所有端口记录, 回车返回):" number
     number=${number:-99}
 
     if [[ $number -eq 99 ]]; then
       return
-    elif [[ $number -gt 3 || $number -lt -1 || $number -eq 0 ]]; then
+    elif [[ $number -gt $portNum || $number -lt -1 || $number -eq 0 ]]; then
       echo "非法输入!"
       return
     elif [[ $number -eq -1 ]]; then
@@ -2435,6 +2456,9 @@ makeWWW() {
   is_self_domain=0
   webIp=$(get_webip)
   default_webip=$(get_default_webip)
+  if [[ -z "$webIp" ]]; then
+    webIp=$default_webip
+  fi
   green "可用webip是: $webIp, 默认webip是: $default_webip"
   read -p "是否使用自定义域名? [y/n] [n]:" input
   input=${input:-n}
@@ -2442,12 +2466,7 @@ makeWWW() {
     is_self_domain=1
     read -p "请输入域名(确保此前域名已指向webip):" domain
   else
-    user="$(whoami)"
-    if isServ00; then
-      domain="${proc}.$user.serv00.net"
-    else
-      domain="$proc.$user.ct8.pl"
-    fi
+    domain=$(getUserDoMain "$proc")
   fi
 
   if [[ -z "$domain" ]]; then
@@ -2588,7 +2607,7 @@ installBurnReading() {
   domainPath="$installpath/domains/$domain/public_html"
   cd $domainPath
   echo "正在下载并安装 OneTimeMessagePHP ..."
-  if ! download_from_github_release fkj-src OneTimeMessagePHP OneTimeMessagePHP; then
+  if ! download_from_github_release fkj-src OneTimeMessagePHP OneTimeMessagePHP.zip; then
     red "下载失败!"
     return 1
   fi
@@ -2801,7 +2820,7 @@ startWebSSH() {
     stopProc "wssh"
   fi
   echo "正在启动中..."
-  cmd="nohup ./wssh --port=$port --fbidhttp=False --xheaders=False --encoding='utf-8' --delay=10  $args &"
+  cmd="nohup ./wssh --port=$port --wpintvl=30 --fbidhttp=False --xheaders=False --encoding='utf-8' --delay=10  $args &"
   eval "$cmd"
   sleep 2
   if checkProcAlive wssh; then
@@ -2922,6 +2941,212 @@ linkAliveServ() {
   #showMenu
 }
 
+keepAliveServ() {
+  if ! checkInstalled "serv00-play"; then
+    return 1
+  fi
+  while true; do
+    yellow "---------------------"
+    echo "keepAlive:"
+    echo "1. 安装"
+    echo "2. 更新(须先按1更新serv00-play)"
+    echo "3. 更新保活时间间隔"
+    echo "4. 修改token"
+    echo "8. 卸载"
+    echo "9. 返回主菜单"
+    echo "0. 退出脚本"
+    yellow "---------------------"
+    read -p "请选择:" input
+
+    case $input in
+    1)
+      installkeepAlive
+      ;;
+    2)
+      updatekeepAlive
+      ;;
+    3)
+      setKeepAliveInterval
+      ;;
+    4)
+      changeKeepAliveToken
+      ;;
+    8)
+      uninstallkeepAlive
+      ;;
+    9)
+      break
+      ;;
+    0)
+      exit 0
+      ;;
+    *)
+      echo "无效选项，请重试"
+      ;;
+    esac
+  done
+
+  showMenu
+}
+
+installkeepAlive() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  local domainPath="${installpath}/domains/$domain/public_nodejs"
+  local workdir="${installpath}/serv00-play/keepalive"
+  if [[ -e "$domainPath/config.json" ]]; then
+    red "已安装,请勿重复安装!"
+    return 1
+  fi
+  cd $workdir
+
+  read -p "需要使用默认域名[$domain]进行安装，若继续安装将会删除默认域名，确认是否继续? [y/n] [y]:" input
+  input=${input:-y}
+  if [[ "$input" != "y" ]]; then
+    echo "取消安装"
+    return 1
+  fi
+  delDefaultDomain
+  echo "正在安装..."
+  if ! createDefaultDomain; then
+    return 1
+  fi
+  mv "$domainPath/public" "$domainPath/static"
+  cp ./nezha.jpg $domainPath/static
+  cp ./config.json $domainPath
+  cp ./app.js $domainPath
+
+  cd $domainPath
+  if ! npm22 install express body-parser child_process fs; then
+    red "安装依赖失败"
+    return 1
+  fi
+
+  read -p "是否需要自定义token? [y/n] [y]:" input
+  input=${input:-y}
+  if [[ "$input" == "y" ]]; then
+    uuid=""
+    read -p "请输入token:" uuid
+    if [[ -z "$uuid" ]]; then
+      red "token不能为空!"
+      return 1
+    fi
+  else
+    uuid=$(uuidgen)
+  fi
+  green "你的token是:$uuid"
+  sed -i '' "s/uuid/$uuid/g" config.json
+  read -p "输入保活时间间隔(单位:分钟)[默认:2分钟]:" interval
+  interval=${interval:-2}
+  sed -i '' "s/TM/$interval/g" config.json
+
+  green "安装成功"
+
+}
+
+uninstallkeepAlive() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  local domainPath="${installpath}/domains/$domain/public_nodejs"
+  read -p "是否卸载? [y/n] [n]:" input
+  input=${input:-n}
+  if [[ "$input" != "y" ]]; then
+    return 1
+  fi
+  domainPath="${installpath}/domains/$domain/public_nodejs"
+  if ! delDefaultDomain; then
+    return 1
+  fi
+  green "卸载成功"
+}
+
+createDefaultDomain() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  rt=$(devil www add $domain nodejs /usr/local/bin/node22 production)
+  if [[ ! "$rt" =~ .*succesfully*$ ]]; then
+    red "创建默认域名失败"
+    return 1
+  fi
+}
+
+delDefaultDomain() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  rt=$(devil www del $domain --remove)
+  if [[ ! "$rt" =~ .*deleted*$ ]]; then
+    red "删除默认域名失败"
+    return 1
+  fi
+}
+
+updatekeepAlive() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  domainPath="${installpath}/domains/$domain/public_nodejs"
+  workDir="$installpath/serv00-play/keepalive"
+  if [[ ! -e "$domainPath/config.json" ]]; then
+    red "未安装,请先安装!"
+    return 1
+  fi
+  if [[ ! -e "$workDir" ]]; then
+    mkdir -p $workDir
+  fi
+  cd $workDir
+
+  cp ./app.js $domainPath
+
+  cp $workDir/app.js $domainPath
+  devil www restart $domain
+  green "更新成功"
+}
+
+changeKeepAliveToken() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  domainPath="${installpath}/domains/$domain/public_nodejs"
+  if [[ ! -e "$domainPath/config.json" ]]; then
+    red "未安装,请先安装!"
+    return 1
+  fi
+
+  cur_token=$(jq -r ".token" $domainPath/config.json)
+  echo "当前token为: $cur_token"
+  token=""
+  read -p "输入新的token:" token
+  if [[ -z "$token" ]]; then
+    red "token不能为空!"
+    return 1
+  fi
+  upInsertFd $domainPath/config.json token $token
+  if [ $? -ne 0 ]; then
+    red "更新失败!"
+    return 1
+  fi
+  green "更新成功"
+}
+
+setKeepAliveInterval() {
+  local domain=$(getUserDoMain)
+  domain="${domain,,}"
+  domainPath="${installpath}/domains/$domain/public_nodejs"
+  if [[ ! -e "$domainPath/config.json" ]]; then
+    red "未安装,请先安装!"
+    return 1
+  fi
+
+  cur_interval=$(jq -r ".interval" $domainPath/config.json)
+  echo "当前保活时间间隔为: $cur_interval 分钟"
+  read -p "输入保活时间间隔(单位:分钟)[默认:2分钟]:" interval
+  interval=${interval:-2}
+  upInsertFd $domainPath/config.json interval $interval
+  if [ $? -ne 0 ]; then
+    red "更新失败!"
+    return 1
+  fi
+  green "更新成功"
+}
+
 linkAliveStatment() {
   cat <<EOF
      全新的保活方式，无需借助cron，也不需要第三方平台(github/青龙/vps等登录方式)进行保活。 
@@ -2968,7 +3193,7 @@ showMenu() {
 
   options=("安装/更新serv00-play项目" "sun-panel" "webssh" "阅后即焚" "linkalive" "设置保活的项目" "配置sing-box"
     "运行sing-box" "停止sing-box" "显示sing-box节点信息" "快照恢复" "系统初始化" "前置工作及设置中国时区" "管理哪吒探针" "卸载探针" "设置彩色开机字样" "显示本机IP"
-    "mtproto代理" "alist管理" "端口管理" "域名证书管理" "一键root" "自动检测主机IP状态" "一键更换hy2的IP" "卸载")
+    "mtproto代理" "alist管理" "端口管理" "域名证书管理" "一键root" "自动检测主机IP状态" "一键更换hy2的IP" "KeepAlive" "卸载")
 
   select opt in "${options[@]}"; do
     case $REPLY in
@@ -3045,6 +3270,9 @@ showMenu() {
       changeHy2IP
       ;;
     25)
+      keepAliveServ
+      ;;
+    26)
       uninstall
       ;;
     0)
